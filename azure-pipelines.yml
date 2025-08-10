@@ -1,17 +1,20 @@
 # Azure DevOps Pipeline for Gemini CLI DevSecOps Review
+# Version: 1.1 - Fixed
 
-trigger: none # We will trigger this via a PR branch policy
+# This pipeline is triggered by pull requests targeting the main branch.
+trigger: none
 
 pr:
-- main
+- master
 
 pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-- group: Gemini-DevSecOps-Keys # Links the variable group created earlier
+# Links to the variable group containing your GEMINI_API_KEY and DOCKER_HUB_USER.
+- group: 'Gemini-DevSecOps-Keys' 
 - name: imageName
-  value: '$(DOCKER_HUB_USER)/gemini-demo-app' # Replace with your Docker Hub username
+  value: '$(DOCKER_HUB_USER)/gemini-demo-app'
 
 stages:
 - stage: Scan_And_Analyze
@@ -22,29 +25,31 @@ stages:
     steps:
     - task: NodeTool@0
       inputs:
-        versionSpec: '20.x' # Node.js is needed for Gemini CLI
+        versionSpec: '20.x' # Node.js is required for Gemini CLI
       displayName: 'Install Node.js'
 
     - script: |
         sudo apt-get update
         sudo apt-get install -y wget
+        # Install Trivy for container scanning and SBOM generation
         wget https://github.com/aquasecurity/trivy/releases/download/v0.52.2/trivy_0.52.2_Linux-64bit.deb
         sudo dpkg -i trivy_0.52.2_Linux-64bit.deb
+        # Install Gitleaks for secret scanning
         wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
         tar -xzf gitleaks_8.18.2_linux_x64.tar.gz
         sudo mv gitleaks /usr/local/bin/
+        # Install Bandit for Python SAST
         pip install bandit
       displayName: 'Install Scanning Tools (Trivy, Gitleaks, Bandit)'
 
     - script: |
         echo "Running Gitleaks for secret detection..."
-        gitleaks detect --source. -r gitleaks_report.json |
-
-| true # Continue even if secrets are found
+        # FIX: Used '|| true' on the same line to prevent pipeline failure on findings.
+        gitleaks detect --source . -r gitleaks_report.json || true
+        
         echo "Running Bandit for Python SAST..."
-        bandit -r. -f json -o bandit_report.json |
-
-| true # Continue on findings
+        # FIX: Used '|| true' on the same line to prevent pipeline failure on findings.
+        bandit -r . -f json -o bandit_report.json || true
       displayName: 'Run SAST and Secret Scans'
       
     - task: Docker@2
@@ -53,21 +58,21 @@ stages:
         command: 'build'
         repository: '$(imageName)'
         tags: '$(Build.BuildId)'
-        dockerfile: 'app/Dockerfile' # Path to Dockerfile in the sample repo
+        dockerfile: 'app/Dockerfile' # Assumes Dockerfile is in the 'app' directory of the repo
 
     - script: |
-        echo "Scanning Docker image with Trivy..."
-        trivy image --format json --output trivy_report.json --severity HIGH,CRITICAL $(imageName):$(Build.BuildId) |
-
-| true
+        echo "Scanning Docker image with Trivy for vulnerabilities..."
+        # FIX: Used '|| true' on the same line.
+        trivy image --format json --output trivy_report.json --severity HIGH,CRITICAL $(imageName):$(Build.BuildId) || true
+        
         echo "Generating SBOM with Trivy..."
         trivy image --format cyclonedx --output sbom.xml $(imageName):$(Build.BuildId)
       displayName: 'Run Trivy Image Scan & Generate SBOM'
 
     - script: |
         echo "Installing Gemini CLI..."
-        npm install -g @google/gemini-cli
-      displayName: 'Install Gemini CLI'
+        npm install -g @google/gemini-cli@0.1.18
+      displayName: 'Install Gemini CLI v0.1.18'
 
     - script: |
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
@@ -89,25 +94,40 @@ stages:
         4. **Generate Summary:** Combine all findings into a single, well-formatted markdown report suitable for a pull request comment. Start with the policy check result.
         """
         
-        gemini -p "$PROMPT" > gemini_review.md
+        gemini -p "$PROMPT" --context GEMINI.md > gemini_review.md
       displayName: 'Run Gemini CLI for AI Analysis'
       
     - task: PowerShell@2
       displayName: 'Post Gemini Review to PR'
       inputs:
         targetType: 'inline'
+        # FIX: Replaced the entire script block with a valid JSON payload structure and correct PowerShell commands.
         script: |
-          $body = Get-Content -Raw -Path gemini_review.md | ConvertTo-Json
+          # Read the markdown report and escape it for the JSON payload
+          $reviewContent = Get-Content -Raw -Path gemini_review.md | ConvertTo-Json
+          
+          # Azure DevOps REST API endpoint for creating a new thread on a PR
           $url = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0"
+          
+          # Use the pre-defined, secure System.AccessToken for authentication
           $headers = @{
               "Authorization" = "Bearer $(System.AccessToken)"
               "Content-Type" = "application/json"
           }
+
+          # Construct the valid JSON payload to post a comment
           $payload = @"
           {
-              "comments":,
-              "status": 1
+            "comments": [
+              {
+                "parentCommentId": 0,
+                "content": $reviewContent,
+                "commentType": 1
+              }
+            ],
+            "status": 1
           }
           "@
+          
           Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $payload
       condition: succeeded()

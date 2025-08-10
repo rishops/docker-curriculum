@@ -9,7 +9,7 @@ COPY . .
 # install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# tell the port number the container should expose
+# container exposes port 5000
 EXPOSE 5000
 
 # run the command

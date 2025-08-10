@@ -1,0 +1,113 @@
+# Azure DevOps Pipeline for Gemini CLI DevSecOps Review
+
+trigger: none # We will trigger this via a PR branch policy
+
+pr:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- group: Gemini-DevSecOps-Keys # Links the variable group created earlier
+- name: imageName
+  value: '$(DOCKER_HUB_USER)/gemini-demo-app' # Replace with your Docker Hub username
+
+stages:
+- stage: Scan_And_Analyze
+  displayName: 'Run Scans & AI Analysis'
+  jobs:
+  - job: DevSecOps_Scan
+    displayName: 'Run Security and Code Scans'
+    steps:
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '20.x' # Node.js is needed for Gemini CLI
+      displayName: 'Install Node.js'
+
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y wget
+        wget https://github.com/aquasecurity/trivy/releases/download/v0.52.2/trivy_0.52.2_Linux-64bit.deb
+        sudo dpkg -i trivy_0.52.2_Linux-64bit.deb
+        wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
+        tar -xzf gitleaks_8.18.2_linux_x64.tar.gz
+        sudo mv gitleaks /usr/local/bin/
+        pip install bandit
+      displayName: 'Install Scanning Tools (Trivy, Gitleaks, Bandit)'
+
+    - script: |
+        echo "Running Gitleaks for secret detection..."
+        gitleaks detect --source. -r gitleaks_report.json |
+
+| true # Continue even if secrets are found
+        echo "Running Bandit for Python SAST..."
+        bandit -r. -f json -o bandit_report.json |
+
+| true # Continue on findings
+      displayName: 'Run SAST and Secret Scans'
+      
+    - task: Docker@2
+      displayName: 'Build Docker Image'
+      inputs:
+        command: 'build'
+        repository: '$(imageName)'
+        tags: '$(Build.BuildId)'
+        dockerfile: 'app/Dockerfile' # Path to Dockerfile in the sample repo
+
+    - script: |
+        echo "Scanning Docker image with Trivy..."
+        trivy image --format json --output trivy_report.json --severity HIGH,CRITICAL $(imageName):$(Build.BuildId) |
+
+| true
+        echo "Generating SBOM with Trivy..."
+        trivy image --format cyclonedx --output sbom.xml $(imageName):$(Build.BuildId)
+      displayName: 'Run Trivy Image Scan & Generate SBOM'
+
+    - script: |
+        echo "Installing Gemini CLI..."
+        npm install -g @google/gemini-cli
+      displayName: 'Install Gemini CLI'
+
+    - script: |
+        export GEMINI_API_KEY=$(GEMINI_API_KEY)
+        
+        PROMPT="""
+        You are an expert DevSecOps review agent. A pull request has been submitted.
+        Your task is to perform a comprehensive review based on the provided code and scan reports, following the rules in @GEMINI.md.
+
+        **Scan Reports:**
+        - SAST Report: @bandit_report.json
+        - Secret Scan Report: @gitleaks_report.json
+        - Container Vulnerability Report: @trivy_report.json
+        - Software Bill of Materials (SBOM): @sbom.xml
+
+        **Instructions:**
+        1. **Code Review:** Review the code changes in this pull request. Provide specific, actionable suggestions for improvements.
+        2. **Security Analysis:** Analyze all provided security reports.
+        3. **Policy Check:** Based on the rules in @GEMINI.md, determine if this PR passes or fails. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL"). If it fails, list the exact reasons.
+        4. **Generate Summary:** Combine all findings into a single, well-formatted markdown report suitable for a pull request comment. Start with the policy check result.
+        """
+        
+        gemini -p "$PROMPT" > gemini_review.md
+      displayName: 'Run Gemini CLI for AI Analysis'
+      
+    - task: PowerShell@2
+      displayName: 'Post Gemini Review to PR'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $body = Get-Content -Raw -Path gemini_review.md | ConvertTo-Json
+          $url = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0"
+          $headers = @{
+              "Authorization" = "Bearer $(System.AccessToken)"
+              "Content-Type" = "application/json"
+          }
+          $payload = @"
+          {
+              "comments":,
+              "status": 1
+          }
+          "@
+          Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $payload
+      condition: succeeded()

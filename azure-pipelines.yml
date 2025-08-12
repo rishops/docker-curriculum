@@ -6,7 +6,7 @@ pr:
 pool: GCA-AgentPool
 
 variables:
-- group: 'Gemini-DevSecOps-Keys' 
+- group: 'Gemini-DevSecOps-Keys'
 
 stages:
 - stage: Scan_And_Analyze
@@ -34,10 +34,10 @@ stages:
       displayName: 'Install Scanning Tools (Trivy, Gitleaks, Bandit)'
 
     - script: |
-        echo "Running Gitleaks for secret detection..."
+        echo "Running Gitleaks..."
         gitleaks detect --source . -r gitleaks_report.json || true
         
-        echo "Running Bandit for Python SAST..."
+        echo "Running Bandit..."
         source bandit-env/bin/activate
         bandit -r . -f json -o bandit_report.json || true
       displayName: 'Run SAST and Secret Scans'
@@ -59,11 +59,11 @@ stages:
         tags: '$(Build.BuildId)'
 
     - script: |
-        echo "Scanning Docker images with Trivy..."
+        echo "Scanning Docker images..."
         trivy image --format json --output trivy_static_site_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-static-site:$(Build.BuildId) || true
         trivy image --format json --output trivy_flask_app_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId) || true
         
-        echo "Generating SBOM for Docker images..."
+        echo "Generating SBOMs..."
         trivy image --format cyclonedx --output sbom_static_site.xml $(DOCKER_HUB_USER)/gemini-demo-static-site:$(Build.BuildId)
         trivy image --format cyclonedx --output sbom_flask_app.xml $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId)
       displayName: 'Run Trivy Image Scans & Generate SBOMs'
@@ -73,15 +73,18 @@ stages:
         npm install -g @google/gemini-cli@0.1.18
       displayName: 'Install Gemini CLI v0.1.18'
 
+    # FIX: The entire gemini command block has been rewritten to use a heredoc.
+    # This prevents the shell from misinterpreting the prompt's content.
     - script: |
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
-        
-        PROMPT="""
+
+        # Use a heredoc (<<PROMPT) to pass the multi-line string directly to gemini stdin
+        gemini > gemini_review.md <<PROMPT
         You are an expert DevSecOps review agent. A pull request has been submitted.
         Your task is to perform a comprehensive review based on the provided code and scan reports.
 
         **Primary Instructions & Policies:**
-        - Your core rules and policies for this review are defined in the context file: @GEMINI.md
+        - Your core rules for this review are in the context file: @GEMINI.md
 
         **Scan Reports to Analyze:**
         - SAST Report: @bandit_report.json
@@ -92,16 +95,11 @@ stages:
         - Software Bill of Materials (Flask App): @sbom_flask_app.xml
 
         **Your Tasks:**
-        1. **Code Review:** Review the code changes in this pull request. Provide specific, actionable suggestions for improvements.
-        2. **Security Analysis:** Analyze all provided security reports for both services against the policies in @GEMINI.md.
-        3. **Policy Check:** Based on your analysis, determine if this PR passes or fails the policies. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL"). If it fails, list the exact reasons.
-        4. **Generate Summary:** Combine all findings into a single, well-formatted markdown report suitable for a pull request comment. Start with the policy check result.
-        """
-        
-        # FIX: Removed the invalid '--context' flag. The CLI automatically loads files
-        # referenced in the prompt with the '@' syntax, like '@GEMINI.md'.
-        gemini -p "$PROMPT" > gemini_review.md
-        cat gemini_review.md
+        1.  **Code Review:** Analyze the code changes in this pull request.
+        2.  **Security Analysis:** Scrutinize all security reports against the policies in @GEMINI.md.
+        3.  **Policy Check:** Determine if the PR passes or fails. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL") and provide exact reasons for failure.
+        4.  **Generate Summary:** Create a final, well-formatted markdown report for the PR comment, starting with the policy check result.
+        PROMPT
       displayName: 'Run Gemini CLI for AI Analysis'
       
     - task: PowerShell@2

@@ -101,6 +101,7 @@ stages:
         # FIX: Removed the invalid '--context' flag. The CLI automatically loads files
         # referenced in the prompt with the '@' syntax, like '@GEMINI.md'.
         gemini -p "$PROMPT" > gemini_review.md
+        cat gemini_review.md
       displayName: 'Run Gemini CLI for AI Analysis'
       
     - task: PowerShell@2

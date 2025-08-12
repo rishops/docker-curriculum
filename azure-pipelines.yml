@@ -6,9 +6,7 @@ pr:
 pool: GCA-AgentPool
 
 variables:
-# Links to the variable group containing your GEMINI_API_KEY and DOCKER_HUB_USER.
 - group: 'Gemini-DevSecOps-Keys' 
-# We will define more specific image names directly in the build tasks.
 
 stages:
 - stage: Scan_And_Analyze
@@ -40,20 +38,15 @@ stages:
         gitleaks detect --source . -r gitleaks_report.json || true
         
         echo "Running Bandit for Python SAST..."
-        # Activate the virtual environment to ensure the bandit command is found
         source bandit-env/bin/activate
         bandit -r . -f json -o bandit_report.json || true
       displayName: 'Run SAST and Secret Scans'
       
-    # FIX: Replaced the single Docker build task with two separate tasks,
-    # one for each Dockerfile.
     - task: Docker@2
       displayName: 'Build Static Site Docker Image'
       inputs:
         command: 'build'
-        # Correctly points to the first Dockerfile
         dockerfile: 'static-site/Dockerfile'
-        # Assigns a unique and descriptive name to the image
         repository: '$(DOCKER_HUB_USER)/gemini-demo-static-site' 
         tags: '$(Build.BuildId)'
 
@@ -61,19 +54,16 @@ stages:
       displayName: 'Build Flask App Docker Image'
       inputs:
         command: 'build'
-        # Correctly points to the second Dockerfile
         dockerfile: 'flask-app/Dockerfile' 
-        # Assigns a unique and descriptive name to the image
         repository: '$(DOCKER_HUB_USER)/gemini-demo-flask-app'
         tags: '$(Build.BuildId)'
 
-    # FIX: Updated the scanning step to analyze both images built in the previous tasks.
     - script: |
-        echo "Scanning Docker images with Trivy for vulnerabilities..."
+        echo "Scanning Docker images with Trivy..."
         trivy image --format json --output trivy_static_site_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-static-site:$(Build.BuildId) || true
         trivy image --format json --output trivy_flask_app_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId) || true
         
-        echo "Generating SBOM for Docker images with Trivy..."
+        echo "Generating SBOM for Docker images..."
         trivy image --format cyclonedx --output sbom_static_site.xml $(DOCKER_HUB_USER)/gemini-demo-static-site:$(Build.BuildId)
         trivy image --format cyclonedx --output sbom_flask_app.xml $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId)
       displayName: 'Run Trivy Image Scans & Generate SBOMs'
@@ -83,7 +73,6 @@ stages:
         npm install -g @google/gemini-cli@0.1.18
       displayName: 'Install Gemini CLI v0.1.18'
 
-    # FIX: Updated the prompt to reference the new, separate container reports and SBOMs.
     - script: |
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
         
@@ -91,7 +80,10 @@ stages:
         You are an expert DevSecOps review agent. A pull request has been submitted.
         Your task is to perform a comprehensive review based on the provided code and scan reports.
 
-        **Scan Reports:**
+        **Primary Instructions & Policies:**
+        - Your core rules and policies for this review are defined in the context file: @GEMINI.md
+
+        **Scan Reports to Analyze:**
         - SAST Report: @bandit_report.json
         - Secret Scan Report: @gitleaks_report.json
         - Container Vulnerability Report (Static Site): @trivy_static_site_report.json
@@ -99,14 +91,16 @@ stages:
         - Container Vulnerability Report (Flask App): @trivy_flask_app_report.json
         - Software Bill of Materials (Flask App): @sbom_flask_app.xml
 
-        **Instructions:**
+        **Your Tasks:**
         1. **Code Review:** Review the code changes in this pull request. Provide specific, actionable suggestions for improvements.
-        2. **Security Analysis:** Analyze all provided security reports for both services.
-        3. **Policy Check:** Based on the rules in @GEMINI.md, determine if this PR passes or fails. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL"). If it fails, list the exact reasons.
+        2. **Security Analysis:** Analyze all provided security reports for both services against the policies in @GEMINI.md.
+        3. **Policy Check:** Based on your analysis, determine if this PR passes or fails the policies. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL"). If it fails, list the exact reasons.
         4. **Generate Summary:** Combine all findings into a single, well-formatted markdown report suitable for a pull request comment. Start with the policy check result.
         """
         
-        gemini -p "$PROMPT" --context GEMINI.md > gemini_review.md
+        # FIX: Removed the invalid '--context' flag. The CLI automatically loads files
+        # referenced in the prompt with the '@' syntax, like '@GEMINI.md'.
+        gemini -p "$PROMPT" > gemini_review.md
       displayName: 'Run Gemini CLI for AI Analysis'
       
     - task: PowerShell@2

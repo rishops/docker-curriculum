@@ -31,25 +31,26 @@ stages:
         python3 -m venv bandit-env
         source bandit-env/bin/activate
         pip install bandit
-      displayName: 'Install Scanning Tools (Trivy, Gitleaks, Bandit)'
+        npm install -g @google/gemini-cli@0.1.18
+      displayName: 'Install All Scanning Tools & Gemini CLI'
 
+    # --- Step 1: Run Scans & Generate Raw Reports ---
     - script: |
-        echo "Running Gitleaks..."
+        echo "Running Gitleaks for secret detection..."
         gitleaks detect --source . -r gitleaks_report.json || true
         
-        echo "Running Bandit..."
+        echo "Running Bandit for Python SAST..."
         source bandit-env/bin/activate
         bandit -r . -f json -o bandit_report.json || true
-      displayName: 'Run SAST and Secret Scans'
+      displayName: 'Run SAST & Secret Scans'
       
     - task: Docker@2
-      displayName: 'Build Static Site Docker Image'
+      displayName: 'Build Static Site & Flask App Docker Images'
       inputs:
         command: 'build'
         dockerfile: 'static-site/Dockerfile'
         repository: '$(DOCKER_HUB_USER)/gemini-demo-static-site' 
         tags: '$(Build.BuildId)'
-
     - task: Docker@2
       displayName: 'Build Flask App Docker Image'
       inputs:
@@ -59,55 +60,64 @@ stages:
         tags: '$(Build.BuildId)'
 
     - script: |
-        echo "Scanning Docker images..."
+        echo "Scanning Docker images with Trivy..."
         trivy image --format json --output trivy_static_site_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-static-site:$(Build.BuildId) || true
         trivy image --format json --output trivy_flask_app_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId) || true
-        
-        echo "Generating SBOMs..."
-        trivy image --format cyclonedx --output sbom_static_site.xml $(DOCKER_HUB_USER)/gemini-demo-static-site:$(Build.BuildId)
-        trivy image --format cyclonedx --output sbom_flask_app.xml $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId)
-      displayName: 'Run Trivy Image Scans & Generate SBOMs'
+      displayName: 'Run Trivy Image Scans'
 
-    - script: |
-        echo "Installing Gemini CLI..."
-        npm install -g @google/gemini-cli@0.1.18
-      displayName: 'Install Gemini CLI v0.1.18'
-
-    # FIX: The entire gemini command block has been rewritten to use a heredoc.
-    # This prevents the shell from misinterpreting the prompt's content.
+    # --- Step 2: Individual AI Agent Analysis ---
     - script: |
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
-        # Use a heredoc (<<PROMPT) to pass the multi-line string directly to gemini stdin
-        gemini > gemini_review.md <<PROMPT
-        You are an expert DevSecOps review agent. A pull request has been submitted.
-        Your task is to perform a comprehensive review based on the provided code and scan reports.
-
-        **Primary Instructions & Policies:**
-        - Your core rules for this review are in the context file: @GEMINI.md
-
-        **Scan Reports to Analyze:**
-        - SAST Report: @bandit_report.json
-        - Secret Scan Report: @gitleaks_report.json
-        - Container Vulnerability Report (Static Site): @trivy_static_site_report.json
-        - Software Bill of Materials (Static Site): @sbom_static_site.xml
-        - Container Vulnerability Report (Flask App): @trivy_flask_app_report.json
-        - Software Bill of Materials (Flask App): @sbom_flask_app.xml
-
-        **Your Tasks:**
-        1.  **Code Review:** Analyze the code changes in this pull request.
-        2.  **Security Analysis:** Scrutinize all security reports against the policies in @GEMINI.md.
-        3.  **Policy Check:** Determine if the PR passes or fails. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL") and provide exact reasons for failure.
-        4.  **Generate Summary:** Create a final, well-formatted markdown report for the PR comment, starting with the policy check result.
+        echo "Invoking Bandit SAST Agent..."
+        gemini > bandit-sast-agent.md <<PROMPT
+        You are a Python code security analyst. Analyze the following Bandit SAST report: @bandit_report.json.
+        Summarize the key vulnerabilities found, focusing on the most critical issues.
+        Provide a brief, high-level recommendation for each type of finding.
         PROMPT
-      displayName: 'Run Gemini CLI for AI Analysis'
+
+        echo "Invoking Gitleaks Secrets Agent..."
+        gemini > gitleaks-secrets-agent.md <<PROMPT
+        You are a secrets detection specialist. Analyze this Gitleaks report: @gitleaks_report.json.
+        State clearly if any hardcoded secrets were found. If so, describe the type of secret and its location without exposing the secret itself.
+        PROMPT
+
+        echo "Invoking Trivy Container Agent..."
+        gemini > trivy-container-agent.md <<PROMPT
+        You are a container security expert. Analyze these two Trivy vulnerability reports: @trivy_static_site_report.json and @trivy_flask_app_report.json.
+        Summarize the most critical vulnerabilities (HIGH and CRITICAL severity) across both images. List the top 3 most severe vulnerabilities and the images they affect.
+        PROMPT
+      displayName: 'Run Specialist AI Agents for Focused Analysis'
+
+    # --- Step 3: Final Consolidation by Lead AI Agent ---
+    - script: |
+        export GEMINI_API_KEY=$(GEMINI_API_KEY)
+
+        echo "Invoking Lead Security Agent for final consolidation..."
+        gemini > lead-security-agent.md <<PROMPT
+        You are a lead security agent reviewing a pull request. Your team of specialist agents has provided the following analysis reports:
+        - SAST Analysis: @bandit-sast-agent.md
+        - Secrets Analysis: @gitleaks-secrets-agent.md
+        - Container Vulnerability Analysis: @trivy-container-agent.md
+
+        Your tasks:
+        1.  **Final Policy Check:** Based on the provided agent reports and the rules in @GEMINI.md, determine if this PR passes or fails. Start your response with "POLICY CHECK: PASS" or "POLICY CHECK: FAIL".
+        2.  **Executive Summary:** Provide a brief, high-level summary of the overall security posture of this PR.
+        3.  **Consolidated Findings:** Synthesize the key findings from each agent report into a clear, actionable list for the developer. Group findings by agent (SAST, Secrets, Container).
+        PROMPT
+
+        echo "--- CONSOLIDATED SECURITY REPORT ---"
+        cat lead-security-agent.md
+        echo "------------------------------------"
+      displayName: 'Consolidate Agent Reports & Display Final Summary'
       
     - task: PowerShell@2
-      displayName: 'Post Gemini Review to PR'
+      displayName: 'Post Consolidated Review to PR'
       inputs:
         targetType: 'inline'
         script: |
-          $reviewContent = Get-Content -Raw -Path gemini_review.md | ConvertTo-Json
+          # Post the final consolidated report from the lead agent
+          $reviewContent = Get-Content -Raw -Path lead-security-agent.md | ConvertTo-Json
           $url = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0"
           $headers = @{
               "Authorization" = "Bearer $(System.AccessToken)"

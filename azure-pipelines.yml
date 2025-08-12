@@ -88,16 +88,10 @@ stages:
 
         **Scan Reports to Analyze:**
         - SAST Report: @bandit_report.json
-        - Secret Scan Report: @gitleaks_report.json
-        - Container Vulnerability Report (Static Site): @trivy_static_site_report.json
-        - Software Bill of Materials (Static Site): @sbom_static_site.xml
-        - Container Vulnerability Report (Flask App): @trivy_flask_app_report.json
-        - Software Bill of Materials (Flask App): @sbom_flask_app.xml
+
 
         **Your Tasks:**
-        1.  **Code Review:** Analyze the code changes in this pull request.
         2.  **Security Analysis:** Scrutinize all security reports against the policies in @GEMINI.md.
-        3.  **Policy Check:** Determine if the PR passes or fails. State the result clearly (e.g., "POLICY CHECK: PASS" or "POLICY CHECK: FAIL") and provide exact reasons for failure.
         4.  **Generate Summary:** Create a final, well-formatted markdown report for the PR comment, starting with the policy check result.
         PROMPT
       displayName: 'Run Gemini CLI for AI Analysis'

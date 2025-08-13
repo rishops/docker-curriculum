@@ -22,7 +22,7 @@ stages:
 
     - script: |
         sudo apt-get update
-        sudo apt-get install -y wget
+        sudo apt-get install -y wget jq # Added jq for the bash script
         wget https://github.com/aquasecurity/trivy/releases/download/v0.52.2/trivy_0.52.2_Linux-64bit.deb
         sudo dpkg -i trivy_0.52.2_Linux-64bit.deb
         wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
@@ -64,48 +64,38 @@ stages:
         trivy image --format json --output trivy_flask_app_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId) || true
       displayName: 'Run Trivy Image Scans'
 
+    # FIX: Replaced heredoc with file creation and cat/pipe method
     - script: |
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
+
+        echo "Creating prompts for specialist agents..."
+        echo "You are a Python code security analyst. Analyze the following Bandit SAST report: @bandit_report.json. Summarize the key vulnerabilities found." > bandit-prompt.md
+        echo "You are a secrets detection specialist. Analyze this Gitleaks report: @gitleaks_report.json. State clearly if any hardcoded secrets were found." > gitleaks-prompt.md
+        echo "You are a container security expert. Analyze these two Trivy vulnerability reports: @trivy_static_site_report.json and @trivy_flask_app_report.json. Summarize the most critical vulnerabilities." > trivy-prompt.md
 
         echo "Invoking Specialist AI Agents..."
-        gemini > bandit-sast-agent.md <<PROMPT
-        You are a Python code security analyst. Analyze the following Bandit SAST report: @bandit_report.json. Summarize the key vulnerabilities found.
-        PROMPT
-        gemini > gitleaks-secrets-agent.md <<PROMPT
-        You are a secrets detection specialist. Analyze this Gitleaks report: @gitleaks_report.json. State clearly if any hardcoded secrets were found.
-        PROMPT
-        gemini > trivy-container-agent.md <<PROMPT
-        You are a container security expert. Analyze these two Trivy vulnerability reports: @trivy_static_site_report.json and @trivy_flask_app_report.json. Summarize the most critical vulnerabilities.
-        PROMPT
+        cat bandit-prompt.md | gemini > bandit-sast-agent.md
+        cat gitleaks-prompt.md | gemini > gitleaks-secrets-agent.md
+        cat trivy-prompt.md | gemini > trivy-container-agent.md
       displayName: 'Run Specialist AI Agents for Focused Analysis'
 
+    # FIX: Replaced heredoc with file creation and cat/pipe method
     - script: |
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
+        echo "Creating prompt for lead agent..."
+        echo "You are a lead security agent. Your team of agents has provided these reports: SAST Analysis: @bandit-sast-agent.md, Secrets Analysis: @gitleaks-secrets-agent.md, Container Vulnerability Analysis: @trivy-container-agent.md. Your tasks: 1. **Final Policy Check:** Based on the reports and rules in @GEMINI.md, state 'POLICY CHECK: PASS' or 'POLICY CHECK: FAIL'. 2. **Executive Summary:** Provide a brief overview of the security posture. 3. **Consolidated Findings:** Synthesize key findings from each agent into a clear, actionable list." > lead-agent-prompt.md
+
         echo "Invoking Lead Security Agent..."
-        gemini > lead-security-agent.md <<PROMPT
-        You are a lead security agent. Your team of agents has provided these reports: SAST Analysis: @bandit-sast-agent.md, Secrets Analysis: @gitleaks-secrets-agent.md, Container Vulnerability Analysis: @trivy-container-agent.md.
-        Your tasks:
-        1. **Final Policy Check:** Based on the reports and rules in @GEMINI.md, state "POLICY CHECK: PASS" or "POLICY CHECK: FAIL".
-        2. **Executive Summary:** Provide a brief overview of the security posture.
-        3. **Consolidated Findings:** Synthesize key findings from each agent into a clear, actionable list.
-        PROMPT
+        cat lead-agent-prompt.md | gemini > lead-security-agent.md
 
         echo "--- CONSOLIDATED SECURITY REPORT ---"
         cat lead-security-agent.md
         echo "------------------------------------"
       displayName: 'Consolidate Agent Reports & Display Final Summary'
       
-    # FIX: Replaced the PowerShell task with a more reliable Bash/Curl script.
-    # This works on any Linux agent without needing PowerShell installed.
     - bash: |
-        # This script posts the final report back to the Azure DevOps Pull Request.
-        # It uses the pre-defined System.AccessToken for secure authentication.
-        
-        # Prepare the comment content by escaping special characters for JSON
         comment_content=$(jq -Rsa . < lead-security-agent.md)
-
-        # Construct the JSON payload for the Azure DevOps REST API
         pr_comment_body="{
           \"comments\": [
             {
@@ -117,7 +107,6 @@ stages:
           \"status\": 1
         }"
         
-        # Use curl to post the comment
         curl -L -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $(System.AccessToken)" \
         -d "${pr_comment_body}" \
         "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0"

@@ -66,6 +66,7 @@ stages:
 
     # FIX: Replaced heredoc with file creation and cat/pipe method
     - script: |
+        set -e
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
         echo "Creating prompts for specialist agents..."
@@ -81,6 +82,7 @@ stages:
 
     # FIX: Replaced heredoc with file creation and cat/pipe method
     - script: |
+        set -e
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
         echo "Creating prompt for lead agent..."

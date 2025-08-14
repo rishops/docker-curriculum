@@ -22,7 +22,7 @@ stages:
 
     - script: |
         sudo apt-get update
-        sudo apt-get install -y wget jq # Ensure jq is installed
+        sudo apt-get install -y wget jq
         wget https://github.com/aquasecurity/trivy/releases/download/v0.52.2/trivy_0.52.2_Linux-64bit.deb
         sudo dpkg -i trivy_0.52.2_Linux-64bit.deb
         wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
@@ -35,10 +35,10 @@ stages:
       displayName: 'Install All Scanning Tools & Gemini CLI'
 
     - script: |
-        echo "Running Gitleaks for secret detection..."
+        echo "Running Gitleaks..."
         gitleaks detect --source . -r gitleaks_report.json || true
         
-        echo "Running Bandit for Python SAST..."
+        echo "Running Bandit..."
         source bandit-env/bin/activate
         bandit -r . -f json -o bandit_report.json || true
       displayName: 'Run SAST & Secret Scans'
@@ -65,7 +65,6 @@ stages:
       displayName: 'Run Trivy Image Scans'
 
     - script: |
-        set -x
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
         echo "Creating prompts for specialist agents..."
@@ -77,10 +76,9 @@ stages:
         cat bandit-prompt.md | gemini > bandit-sast-agent.md
         cat gitleaks-prompt.md | gemini > gitleaks-secrets-agent.md
         cat trivy-prompt.md | gemini > trivy-container-agent.md
-      displayName: 'Run Specialist AI Agents for Focused Analysis'
+      displayName: 'Run Specialist AI Agents'
 
     - script: |
-        set -x
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
         echo "Creating prompt for lead agent..."
@@ -94,26 +92,30 @@ stages:
         echo "------------------------------------"
       displayName: 'Consolidate Agent Reports & Display Final Summary'
       
-    # FIX: Corrected the syntax for all Azure DevOps variables to the proper
-    # environment variable format for bash scripts (e.g., $SYSTEM_ACCESSTOKEN).
     - bash: |
-        echo "Posting comment to Pull Request: $SYSTEM_PULLREQUEST_PULLREQUESTID"
+        # FIX: Changed `$(Build.Reason)` to the correct environment variable `$BUILD_REASON` for bash scripts.
+        if [ "$BUILD_REASON" == "PullRequest" ]; then
+          echo "Build was triggered by a PR. Posting comment to PR #$SYSTEM_PULLREQUEST_PULLREQUESTID..."
 
-        comment_content=$(jq -Rsa . < lead-security-agent.md)
-        pr_comment_body="{
-          \"comments\": [
-            {
-              \"parentCommentId\": 0,
-              \"content\": ${comment_content},
-              \"commentType\": 1
-            }
-          ],
-          \"status\": 1
-        }"
-        
-        # Correctly using environment variables for the URL and Bearer token
-        curl -L -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
-        -d "${pr_comment_body}" \
-        "$SYSTEM_TEAMFOUNDATIONCOLLECTIONURI$SYSTEM_TEAMPROJECT/_apis/git/repositories/$BUILD_REPOSITORY_NAME/pullRequests/$SYSTEM_PULLREQUEST_PULLREQUESTID/threads?api-version=6.0"
-      displayName: 'Post Consolidated Review to PR'
+          comment_content=$(jq -Rsa . < lead-security-agent.md)
+          pr_comment_body="{
+            \"comments\": [
+              {
+                \"parentCommentId\": 0,
+                \"content\": ${comment_content},
+                \"commentType\": 1
+              }
+            ],
+            \"status\": 1
+          }"
+          
+          API_URL="$SYSTEM_TEAMFOUNDATIONCOLLECTIONURI/_apis/git/repositories/$BUILD_REPOSITORY_ID/pullRequests/$SYSTEM_PULLREQUEST_PULLREQUESTID/threads?api-version=6.0"
+
+          curl -L -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
+          -d "${pr_comment_body}" \
+          "$API_URL"
+        else
+          echo "Build Reason: $BUILD_REASON. Skipping comment post because this is not a Pull Request build."
+        fi
+      displayName: 'Post Consolidated Review to PR (if applicable)'
       condition: succeeded()

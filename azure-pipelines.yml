@@ -6,7 +6,7 @@ pr:
 pool: GCA-AgentPool
 
 variables:
-- group: 'Gemini-DevSecOps-Keys' 
+- group: 'Gemini-DevSecOps-Keys'
 
 stages:
 - stage: Scan_And_Analyze
@@ -22,7 +22,7 @@ stages:
 
     - script: |
         sudo apt-get update
-        sudo apt-get install -y wget jq # Added jq for the bash script
+        sudo apt-get install -y wget jq # Ensure jq is installed
         wget https://github.com/aquasecurity/trivy/releases/download/v0.52.2/trivy_0.52.2_Linux-64bit.deb
         sudo dpkg -i trivy_0.52.2_Linux-64bit.deb
         wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
@@ -64,15 +64,14 @@ stages:
         trivy image --format json --output trivy_flask_app_report.json --severity HIGH,CRITICAL $(DOCKER_HUB_USER)/gemini-demo-flask-app:$(Build.BuildId) || true
       displayName: 'Run Trivy Image Scans'
 
-    # FIX: Replaced heredoc with file creation and cat/pipe method
     - script: |
-        set -e
+        set -x
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
         echo "Creating prompts for specialist agents..."
-        echo "You are a Python code security analyst. Analyze the following Bandit SAST report: @bandit_report.json. Summarize the key vulnerabilities found." > bandit-prompt.md
-        echo "You are a secrets detection specialist. Analyze this Gitleaks report: @gitleaks_report.json. State clearly if any hardcoded secrets were found." > gitleaks-prompt.md
-        echo "You are a container security expert. Analyze these two Trivy vulnerability reports: @trivy_static_site_report.json and @trivy_flask_app_report.json. Summarize the most critical vulnerabilities." > trivy-prompt.md
+        echo "You are a Python code security analyst. Analyze @bandit_report.json and summarize the key vulnerabilities." > bandit-prompt.md
+        echo "You are a secrets detection specialist. Analyze @gitleaks_report.json and state if any hardcoded secrets were found." > gitleaks-prompt.md
+        echo "You are a container security expert. Analyze @trivy_static_site_report.json and @trivy_flask_app_report.json and summarize critical vulnerabilities." > trivy-prompt.md
 
         echo "Invoking Specialist AI Agents..."
         cat bandit-prompt.md | gemini > bandit-sast-agent.md
@@ -80,13 +79,12 @@ stages:
         cat trivy-prompt.md | gemini > trivy-container-agent.md
       displayName: 'Run Specialist AI Agents for Focused Analysis'
 
-    # FIX: Replaced heredoc with file creation and cat/pipe method
     - script: |
-        set -e
+        set -x
         export GEMINI_API_KEY=$(GEMINI_API_KEY)
 
         echo "Creating prompt for lead agent..."
-        echo "You are a lead security agent. Your team of agents has provided these reports: SAST Analysis: @bandit-sast-agent.md, Secrets Analysis: @gitleaks-secrets-agent.md, Container Vulnerability Analysis: @trivy-container-agent.md. Your tasks: 1. **Final Policy Check:** Based on the reports and rules in @GEMINI.md, state 'POLICY CHECK: PASS' or 'POLICY CHECK: FAIL'. 2. **Executive Summary:** Provide a brief overview of the security posture. 3. **Consolidated Findings:** Synthesize key findings from each agent into a clear, actionable list." > lead-agent-prompt.md
+        echo "You are a lead security agent. Your team provided these reports: SAST Analysis: @bandit-sast-agent.md, Secrets Analysis: @gitleaks-secrets-agent.md, Container Analysis: @trivy-container-agent.md. Your tasks: 1. **Policy Check:** Based on reports and rules in @GEMINI.md, state 'POLICY CHECK: PASS' or 'FAIL'. 2. **Executive Summary:** Briefly summarize the security posture. 3. **Consolidated Findings:** Synthesize key findings into an actionable list." > lead-agent-prompt.md
 
         echo "Invoking Lead Security Agent..."
         cat lead-agent-prompt.md | gemini > lead-security-agent.md
@@ -96,7 +94,11 @@ stages:
         echo "------------------------------------"
       displayName: 'Consolidate Agent Reports & Display Final Summary'
       
+    # FIX: Corrected the syntax for all Azure DevOps variables to the proper
+    # environment variable format for bash scripts (e.g., $SYSTEM_ACCESSTOKEN).
     - bash: |
+        echo "Posting comment to Pull Request: $SYSTEM_PULLREQUEST_PULLREQUESTID"
+
         comment_content=$(jq -Rsa . < lead-security-agent.md)
         pr_comment_body="{
           \"comments\": [
@@ -109,8 +111,9 @@ stages:
           \"status\": 1
         }"
         
-        curl -L -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $(System.AccessToken)" \
+        # Correctly using environment variables for the URL and Bearer token
+        curl -L -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
         -d "${pr_comment_body}" \
-        "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.Name)/pullRequests/$(System.PullRequest.PullRequestId)/threads?api-version=6.0"
+        "$SYSTEM_TEAMFOUNDATIONCOLLECTIONURI$SYSTEM_TEAMPROJECT/_apis/git/repositories/$BUILD_REPOSITORY_NAME/pullRequests/$SYSTEM_PULLREQUEST_PULLREQUESTID/threads?api-version=6.0"
       displayName: 'Post Consolidated Review to PR'
       condition: succeeded()

@@ -1,6 +1,5 @@
 Docker Curriculum
 ===
 
-> Learn to build and deploy your distributed applications easily to the cloud with Docker
-
+> App to demonstrate Gemini CLI integration within the pipelines
 Follow the curriculum on [docker-curriculum.com](https://docker-curriculum.com/)

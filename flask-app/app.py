@@ -19,7 +19,7 @@ images = [
     "https://firebasestorage.googleapis.com/v0/b/docker-curriculum.appspot.com/o/catnip%2F9.gif?alt=media&token=a57a1c71-a8af-4170-8fee-bfe11809f0b3",
 ]
 
-
+# select images randomly
 @app.route("/")
 def index():
     url = random.choice(images)

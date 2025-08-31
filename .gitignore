@@ -4,3 +4,5 @@ tutorial/public/index.html
 tutorial/public/styles/dist/*
 tutorial/src/styles/dist/*
 .vscode
+.gemini/.env
+.gemini/settings.json
